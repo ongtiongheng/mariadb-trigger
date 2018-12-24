@@ -1,0 +1,594 @@
+
+[root@mail patrick.ong]# cat /etc/crontab 
+SHELL=/bin/bash
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=root
+
+# For details see man 4 crontabs
+
+# Example of job definition:
+# .---------------- minute (0 - 59)
+# |  .------------- hour (0 - 23)
+# |  |  .---------- day of month (1 - 31)
+# |  |  |  .------- month (1 - 12) OR jan,feb,mar,apr ...
+# |  |  |  |  .---- day of week (0 - 6) (Sunday=0 or 7) OR sun,mon,tue,wed,thu,fri,sat
+# |  |  |  |  |
+# *  *  *  *  * user-name  command to be executed
+#
+# Once a day
+#
+# Create the stub account on Fortigate firewall
+#
+# one-time schedule creation, NEED TO RUN 1st
+0 * * * * patrick.ong (/bin/perl /home/patrick.ong/query-events-and-reflect-timing-on-fw.pl) > /dev/null
+#
+# Populate the policies onto the account
+#
+# account and policy creation, POLICY HAS DEPENDENCY ON SCHEDULE
+1 * * * * patrick.ong (/bin/perl /home/patrick.ong/query-records-and-reflect-acc-and-policy-on-fw.pl) > /dev/null
+
+[root@mail patrick.ong]# cat /home/patrick.ong/query-events-and-reflect-timing-on-fw.pl
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use v5.10; # for say() function
+ 
+use DBI;
+use Net::OpenSSH;
+use Expect;
+
+select STDOUT; $| = 1;
+select STDERR; $| = 1;
+
+my $debug = 1;
+my $sshpassword = 'xxx';
+
+my $timeout = 20;
+ 
+# MySQL database configurations
+my $dsn = "DBI:mysql:Booking_WP";
+my $username = "root";
+my $password = '';
+ 
+# connect to MySQL database
+my %attr = ( PrintError=>0,  # turn off error reporting via warn()
+             RaiseError=>1   # report error via die()
+           );
+my $dbh = DBI->connect($dsn,$username,$password,\%attr);
+ 
+# query data from the links table
+my $sql = "SELECT id,
+                  name,
+                  date_format(start, '%H:%i') as starttime,
+                  date_format(start, '%Y/%m/%d') as startdate,
+                  date_format(end, '%H:%i') as endtime,
+                  date_format(end, '%Y/%m/%d') as enddate,
+		  date_format(start, '%Y%m%d%H%i'),
+		  resource_id 
+            FROM events WHERE end >= now() ORDER BY date_format(start, '%Y%m%d%H%i') desc";
+my $sth = $dbh->prepare($sql);
+
+# execute the query
+$sth->execute();
+ 
+while(my @row = $sth->fetchrow_array()){
+     #printf("%s\t%s\t%s\t%s\t%s\n",$row[0],$row[1],$row[2],$row[3],$row[4]);
+     printf("%s\t%s\t%s\t%s\t%s\n",$row[1],$row[2],$row[3],$row[4],$row[5]);
+     #system("expect create-fw-schedules.exp $row[1] $row[2] $row[3]\n");
+        my $ssh = Net::OpenSSH->new('iot_automator@my.ntt.host', password => $sshpassword);
+	my ($pty, $pid) = $ssh->open2pty({ stderr_to_stdout => 1 })
+	    or die "open2pty failed: " . $ssh->error . "\n";
+
+	my $expect = Expect->init($pty);
+	$expect->raw_pty(1);
+	$debug and $expect->log_user(1);
+
+	$debug and print "waiting for password prompt\n";
+	$expect->expect($timeout, 'POC_FW_iNET')
+	    or die "expect failed\n";
+	$debug and  print "prompt seen\n";
+
+	$expect->send("$sshpassword\n");
+	$debug and print "password sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad password\n";
+	$debug and print "password ok\n";
+
+	$expect->send("\r");
+	$debug and print "carrier sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad carrier\n";
+	$debug and print "carrier ok\n";
+
+	$expect->send("config firewall schedule onetime\r");
+	$debug and print "config-firewall-schedule-onetime sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad config-firewall-schedule-onetime\n";
+	$debug and print "config-firewall-schedule-onetime ok\n";
+
+	$expect->send("edit \"$row[1]\"\r");
+	$debug and print "edit-user sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad edit-user\n";
+	$debug and print "edit-user ok\n";
+
+	$expect->send("set start $row[2] $row[3]\r");
+	$debug and print "set-start-time-date sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-start-time-date\n";
+	$debug and print "set-start-time-date ok\n";
+
+	$expect->send("set end $row[4] $row[5]\r");
+	$debug and print "set-end-time-date sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-end-time-date\n";
+	$debug and print "set-end-time-date ok\n";
+
+	$expect->send("next\r");
+	$debug and print "next sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad next\n";
+	$debug and print "next ok\n";
+
+	$expect->send("end\r");
+	$debug and print "end sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad end\n";
+	$debug and print "end ok\n";
+
+	$expect->send("quit\r");
+	$debug and print "quit sent\n";
+
+}
+
+$sth->finish();
+
+       
+# disconnect from the MySQL database
+$dbh->disconnect()
+
+ 
+[root@mail patrick.ong]# cat /home/patrick.ong/query-records-and-reflect-acc-and-policy-on-fw.pl
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use v5.10; # for say() function
+ 
+use DBI;
+use Net::OpenSSH;
+use Expect;
+
+select STDOUT; $| = 1;
+select STDERR; $| = 1;
+
+my $debug = 1;
+my $sshpassword = '1qaz3edc';
+
+my $timeout = 20;
+ 
+# MySQL database configurations
+my $dsn = "DBI:mysql:Booking_WP";
+my $username = "root";
+my $password = '';
+ 
+# connect to MySQL database
+my %attr = ( PrintError=>0,  # turn off error reporting via warn()
+             RaiseError=>1   # report error via die()
+           );
+my $dbh = DBI->connect($dsn,$username,$password,\%attr);
+ 
+# query data from the links table
+#
+#
+# select (@row_number := @row_number +1) as policy_id,wp_users.user_login,wp_creds.password,wp_users.user_email,user_registered from wp_users,wp_creds,(SELECT @row_number:=100) AS t where wp_users.id = wp_creds.userid order by user_registered asc
+#
+# query data from the links table
+my $sql = "SELECT (\@row_number := \@row_number +1) as policy_id,
+                  wp_users.user_login,
+                  wp_users.user_nicename,
+                  wp_creds.password,
+                  wp_users.user_email,
+		  wp_users.user_registered 
+            FROM wp_users,wp_creds,(SELECT \@row_number:=100) AS t WHERE wp_users.id = wp_creds.userid ORDER BY wp_users.user_registered ASC";
+my $sth = $dbh->prepare($sql);
+
+# execute the query
+$sth->execute();
+ 
+while(my @row = $sth->fetchrow_array()){
+     printf("%s\t%s\t%s\t%s\t%s\n",$row[0],$row[1],$row[2],$row[3],$row[4]);
+     #system("expect create-fw-accounts-and-policies.exp $row[0] $row[1] $row[2] $row[3]\n");
+
+        my $ssh = Net::OpenSSH->new('iot_automator@my.ntt.host', password => $sshpassword);
+	my ($pty, $pid) = $ssh->open2pty({ stderr_to_stdout => 1 })
+	    or die "open2pty failed: " . $ssh->error . "\n";
+
+	my $expect = Expect->init($pty);
+	$expect->raw_pty(1);
+	$debug and $expect->log_user(1);
+
+	$debug and print "waiting for password prompt\n";
+	$expect->expect($timeout, 'POC_FW_iNET')
+	    or die "expect failed\n";
+	$debug and  print "prompt seen\n";
+
+	$expect->send("$sshpassword\n");
+	$debug and print "password sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad password\n";
+	$debug and print "password ok\n";
+
+	$expect->send("\r");
+	$debug and print "carrier sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad carrier\n";
+	$debug and print "carrier ok\n";
+
+	$expect->send("config user local\r");
+	$debug and print "goto config-user-local sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad config-user-local\n";
+	$debug and print "config-user-local ok\n";
+
+	$expect->send("edit \"$row[1]\"\r");
+	$debug and print "edit-login-username sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad edit-login-username\n";
+	$debug and print "edit-login-username ok\n";
+
+	$expect->send("set type password\r");
+	$debug and print "set-type-password sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-type-password\n";
+	$debug and print "set-type-password ok\n";
+
+	$expect->send("set passwd $row[3]\r");
+	$debug and print "set-passwd sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-passwd\n";
+	$debug and print "set-passwd ok\n";
+
+	$expect->send("set email-to \"$row[4]\"\r");
+	$debug and print "set-email-to sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-email-to\n";
+	$debug and print "set-email-to ok\n";
+
+	$expect->send("next\r");
+	$debug and print "next sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad next\n";
+	$debug and print "next ok\n";
+
+	$expect->send("end\r");
+	$debug and print "end sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad end\n";
+	$debug and print "end ok\n";
+
+	$expect->send("config firewall policy\r");
+	$debug and print "goto config-firewall-policy sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad config-firewall-policy\n";
+	$debug and print "config-firewall-policy ok\n";
+
+	$expect->send("edit \"$row[0]\"\r");
+	$debug and print "policy-seq sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad policy-seq\n";
+	$debug and print "policy-seq ok\n";
+
+	$expect->send("set name \"$row[1]\"\r");
+	$debug and print "set-name sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-name\n";
+	$debug and print "set-name ok\n";
+
+	$expect->send("set srcintf ssl.root\r");
+	$debug and print "set-srcintf-ssl-root sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-srcintf-ssl-root\n";
+	$debug and print "set-srcintf-ssl-root ok\n";
+
+	$expect->send("set dstintf internal\r");
+	$debug and print "set-dstintf-internal sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-dstintf-internal\n";
+	$debug and print "set-dstintf-internal ok\n";
+
+	$expect->send("set srcaddr SSLVPN_TUNNEL_ADDR1\r");
+	$debug and print "set-srcaddr-SSLVPN_TUNNEL_ADDR1 sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-srcaddr-SSLVPN_TUNNEL_ADDR1\n";
+	$debug and print "set-srcaddr-SSLVPN_TUNNEL_ADDR1 ok\n";
+
+	$expect->send("set dstaddr NET_10.255.0.0/16\r");
+	$debug and print "set-dstaddr-NET_10.255.0.0 sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-dstaddr-NET_10.255.0.0\n";
+	$debug and print "set-dstaddr-NET_10.255.0.0 ok\n";
+
+	$expect->send("set action accept\r");
+	$debug and print "set-action-accept sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-action-accept\n";
+	$debug and print "set-action-accept ok\n";
+
+	$expect->send("set schedule \"$row[1]\"\r");
+	$debug and print "set-schedule sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-schedule\n";
+	$debug and print "set-schedule ok\n";
+
+	$expect->send("set service ALL\r");
+	$debug and print "set-service-ALL sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-service-ALL\n";
+	$debug and print "set-service-ALL ok\n";
+
+	$expect->send("set users \"$row[1]\"\r");
+	$debug and print "set-users sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-users\n";
+	$debug and print "set-users ok\n";
+
+	$expect->send("set ssl-ssh-profile \'\'\r");
+	$debug and print "set-ssl-ssh-profile sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-ssl-ssh-profile\n";
+	$debug and print "set-ssl-ssh-profile ok\n";
+
+	$expect->send("set schedule-timeout enable\r");
+	$debug and print "set-schedule-timeout-enable sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad set-schedule-timeout-enable\n";
+	$debug and print "set-schedule-timeout-enable ok\n";
+
+	$expect->send("next\r");
+	$debug and print "next sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad next\n";
+	$debug and print "next ok\n";
+
+	$expect->send("end\r");
+	$debug and print "end sent\n";
+
+	$expect->expect($timeout, "POC_FW_iNET")
+	    or die "bad end\n";
+	$debug and print "end ok\n";
+
+	$expect->send("quit\r");
+	$debug and print "quit sent\n";
+}
+
+$sth->finish();
+
+       
+# disconnect from the MySQL database
+$dbh->disconnect();
+
+#------------------------------------------------
+#
+# Auto start the script as daemon
+#
+[root@mail patrick.ong]# cat /etc/rc.local 
+#!/bin/bash
+# THIS FILE IS ADDED FOR COMPATIBILITY PURPOSES
+#
+# It is highly advisable to create own systemd services or udev rules
+# to run scripts during boot instead of using this file.
+#
+# In contrast to previous versions due to parallel execution during boot
+# this script will NOT be run after all other services.
+#
+# Please note that you must run 'chmod +x /etc/rc.d/rc.local' to ensure
+# that this script will be executed during boot.
+
+touch /var/lock/subsys/local
+
+#echo 0 > /sys/fs/selinux/enforce
+
+#check http can sendmail
+#getsebool -a | grep mail
+#setsebool -P httpd_can_sendmail on
+
+#/bin/nohup /usr/bin/perl -w /home/patrick.ong/test-poc-monitor-account.pl &
+#/bin/nohup /usr/bin/perl -w /home/patrick.ong/test-poc-monitor-events.pl &
+#preceded by /usr/local/bin/start-nanny.sh at systemd
+# vi /usr/local/bin/start-nanny.sh
+# chmod 744 /usr/local/bin/start-nanny.sh
+# chmod 664 /etc/systemd/system/start-nanny.service
+# vi /etc/systemd/system/start-nanny.service
+# systemctl daemon-reload
+# systemctl enable start-nanny.service
+
+
+[root@mail patrick.ong]# cat /etc/systemd/system/start-nanny.service
+[Unit]
+Description=Nanny events monitor
+After=mariadb.service
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/start-nanny.sh start
+TimeoutSec=0
+RemainAfterExit=yes
+
+
+
+[root@mail patrick.ong]# cat /usr/local/bin/start-nanny.sh
+#!/bin/bash -x
+
+/bin/nohup /usr/bin/perl -w /usr/local/bin/test-poc-monitor-account.pl &
+/bin/nohup /usr/bin/perl -w /usr/local/bin/test-poc-monitor-events.pl &
+
+
+###
+### Compare schema last account with current number and decide next action
+###
+
+[root@mail patrick.ong]# cat /usr/local/bin/test-poc-monitor-account.pl
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use v5.10; # for say() function
+ 
+use DBI;
+
+select STDOUT; $| = 1;
+select STDERR; $| = 1;
+
+my $debug = 1;
+
+sub return_Last($) {
+
+	# MySQL database configurations
+	my $dsn = "DBI:mysql:Booking_WP";
+	my $username = "root";
+	my $password = '';
+	my $last = -1;
+	 
+	# connect to MySQL database
+	my %attr = ( PrintError=>0,  # turn off error reporting via warn()
+		     RaiseError=>1   # report error via die()
+		   );
+	my $dbh = DBI->connect($dsn,$username,$password,\%attr);
+	 
+	# query data from the links table
+	my $sql = "SELECT (AUTO_INCREMENT-1) as Last
+		    FROM information_schema.tables WHERE table_name = \"wp_users\" and TABLE_SCHEMA = \"Booking_WP\"";
+	my $sth = $dbh->prepare($sql);
+
+	# execute the query
+	$sth->execute();
+	 
+	while(my @row = $sth->fetchrow_array()){
+	     printf("%s\t\n",$row[0]);
+	     $last = $row[0];
+	}
+
+	$sth->finish();
+
+	       
+	# disconnect from the MySQL database
+	$dbh->disconnect();
+
+  return $last;
+}
+
+my $a=0;
+my $b=0;
+
+# read file into 'a'
+$a = return_Last($a);
+
+while (1) {
+   print("a is $a and b is $b\n");
+   if ($a > $b) {
+	$b = $a;
+	#//run script
+        `/usr/bin/perl /home/patrick.ong/query-records-and-reflect-acc-and-policy-on-fw.pl`;
+	#//endif
+   }
+sleep 1;
+#//read file into 'a'
+$a = return_Last($a);
+}
+[root@mail patrick.ong]# cat /usr/local/bin/test-poc-monitor-events.pl
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use v5.10; # for say() function
+ 
+use DBI;
+
+select STDOUT; $| = 1;
+select STDERR; $| = 1;
+
+my $debug = 1;
+
+sub return_Last($) {
+
+	# MySQL database configurations
+	my $dsn = "DBI:mysql:Booking_WP";
+	my $username = "root";
+	my $password = '';
+	my $last = -1;
+	 
+	# connect to MySQL database
+	my %attr = ( PrintError=>0,  # turn off error reporting via warn()
+		     RaiseError=>1   # report error via die()
+		   );
+	my $dbh = DBI->connect($dsn,$username,$password,\%attr);
+	 
+	# query data from the links table
+	my $sql = "SELECT (AUTO_INCREMENT-1) as Last
+		    FROM information_schema.tables WHERE table_name = \"events\" and TABLE_SCHEMA = \"Booking_WP\"";
+	my $sth = $dbh->prepare($sql);
+
+	# execute the query
+	$sth->execute();
+	 
+	while(my @row = $sth->fetchrow_array()){
+	     printf("%s\t\n",$row[0]);
+	     $last = $row[0];
+	}
+
+	$sth->finish();
+
+	       
+	# disconnect from the MySQL database
+	$dbh->disconnect();
+
+  return $last;
+}
+
+my $a=0;
+my $b=0;
+
+# read file into 'a'
+$a = return_Last($a);
+
+while (1) {
+   print("a is $a and b is $b\n");
+   if ($a > $b) {
+	$b = $a;
+	#//run script
+        `/usr/bin/perl /home/patrick.ong/query-events-and-reflect-timing-on-fw.pl`;
+	#//endif
+   }
+sleep 1;
+#//read file into 'a'
+$a = return_Last($a);
+}
